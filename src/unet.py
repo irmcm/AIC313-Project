@@ -62,7 +62,7 @@ class SelfAttentionBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         h = self.norm(x).view(B, C, H * W).transpose(1, 2)  # [B, H*W, C]
-        attn_out, _ = self.attn(h, h, h)
+        attn_out, _ = self.attn(h, h, h, need_weights=False)
         attn_out = attn_out.transpose(1, 2).view(B, C, H, W)
         return x + attn_out
 
@@ -87,7 +87,7 @@ class Upsample(nn.Module):
 
 
 class ConditionalUNet(nn.Module):
-    """Class-conditional U-Net (~25M parameters at base_ch=128)."""
+    """Class-conditional U-Net."""
 
     def __init__(
         self,
@@ -96,7 +96,9 @@ class ConditionalUNet(nn.Module):
         base_ch: int = 128,
         ch_mults: tuple[int, ...] = (1, 2, 2, 4),
         num_classes: int = 151,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
+        num_res_blocks: int = 2,
+        attn_res: tuple[int, ...] = (16, 8),
     ):
         super().__init__()
         emb_dim = base_ch * 4
@@ -121,10 +123,10 @@ class ConditionalUNet(nn.Module):
 
         for i, mult in enumerate(ch_mults):
             out_ch = base_ch * mult
-            for _ in range(2):
+            for _ in range(num_res_blocks):
                 block = nn.ModuleList([
                     ResBlock(ch, out_ch, emb_dim, dropout),
-                    SelfAttentionBlock(out_ch) if res in (16, 8) else nn.Identity(),
+                    SelfAttentionBlock(out_ch) if res in attn_res else nn.Identity(),
                 ])
                 self.downs.append(block)
                 ch = out_ch
@@ -143,11 +145,11 @@ class ConditionalUNet(nn.Module):
         self.ups = nn.ModuleList()
         for i, mult in reversed(list(enumerate(ch_mults))):
             out_ch = base_ch * mult
-            for _ in range(3):
+            for _ in range(num_res_blocks + 1):
                 skip_ch = skip_chs.pop()
                 block = nn.ModuleList([
                     ResBlock(ch + skip_ch, out_ch, emb_dim, dropout),
-                    SelfAttentionBlock(out_ch) if res in (16, 8) else nn.Identity(),
+                    SelfAttentionBlock(out_ch) if res in attn_res else nn.Identity(),
                 ])
                 self.ups.append(block)
                 ch = out_ch

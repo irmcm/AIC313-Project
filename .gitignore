@@ -3,3 +3,8 @@ checkpoints/
 __pycache__/
 *.ckpt
 venv/
+results/dev_eval/
+results/dev_reference/
+results/dev_floor/
+results/reference/
+results/evaluation/

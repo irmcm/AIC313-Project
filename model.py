@@ -6,6 +6,22 @@ from torch import nn
 from src.unet import ConditionalUNet
 from src.utils import count_parameters, parameter_summary
 
+PRESETS = {
+    "base": dict(base_ch=128, ch_mults=(1, 2, 2, 4), num_res_blocks=2, attn_res=(16, 8)),
+    "mid": dict(base_ch=96, ch_mults=(1, 2, 3, 4), num_res_blocks=2, attn_res=(16, 8)),
+    "slim": dict(base_ch=64, ch_mults=(1, 2, 4, 8), num_res_blocks=2, attn_res=(16, 8)),
+}
+DEFAULT_PRESET = "base"
+
+
+def build_backbone(preset: str | None = None, **overrides) -> ConditionalUNet:
+    return ConditionalUNet(**{**PRESETS[preset or DEFAULT_PRESET], **overrides})
+
+
+def time_grid(steps: int) -> list[float]:
+    return [1.0 - i / steps for i in range(steps)] + [0.0]
+
+
 class Model(nn.Module): # DO NOT MODIFY BASE CLASS
     """DO NOT MODIFY: Common parent class for both NFE-specific models."""
 
@@ -72,9 +88,8 @@ class Model(nn.Module): # DO NOT MODIFY BASE CLASS
 class ModelOneNFE(Model):
     """Student model evaluated with exactly one model function evaluation."""
 
-    def __init__(self, device="cpu", base_ch: int = 128, **kwargs):
-        backbone = ConditionalUNet(base_ch=base_ch)
-        super().__init__(backbone=backbone)
+    def __init__(self, device="cpu", preset: str | None = None, **kwargs):
+        super().__init__(backbone=build_backbone(preset, **kwargs))
         self.to(device)
 
     @torch.no_grad()
@@ -101,9 +116,8 @@ class ModelOneNFE(Model):
 class ModelFewNFE(Model):
     """Student model evaluated with no more than four model evaluations."""
 
-    def __init__(self, device="cpu", base_ch: int = 128, num_steps: int = 4, **kwargs):
-        backbone = ConditionalUNet(base_ch=base_ch)
-        super().__init__(backbone=backbone)
+    def __init__(self, device="cpu", preset: str | None = None, num_steps: int = 4, **kwargs):
+        super().__init__(backbone=build_backbone(preset, **kwargs))
         self.num_steps = min(num_steps, 4)  # Strict <= 4 NFE limit
         self.to(device)
 
@@ -120,12 +134,13 @@ class ModelFewNFE(Model):
         batch_size = shape[0]
         x = torch.randn(shape, device=device)
 
-        # Euler ODE solver from t=1.0 down to t=0.0 in 4 steps (4 NFEs)
-        dt = 1.0 / self.num_steps
+        ts = time_grid(self.num_steps)
         for step in range(self.num_steps):
-            t_val = 1.0 - step * dt
-            t = torch.full((batch_size,), t_val, device=device)
-            v = self.forward(x, t, category=category)
-            x = x - dt * v
+            t, t_next = ts[step], ts[step + 1]
+            t_vec = torch.full((batch_size,), t, device=device)
+            v = self.forward(x, t_vec, category=category)
+            x0_hat = x - t * v
+            eps_hat = x + (1.0 - t) * v
+            x = (1.0 - t_next) * x0_hat + t_next * eps_hat
 
         return x.clamp(-1.0, 1.0)
